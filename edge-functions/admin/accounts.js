@@ -44,6 +44,13 @@ export async function onRequest(context) {
       return json({ account: publicView(account) });
     }
 
+    if (g.body.action === 'thaw') {
+      account.cooldownUntil = 0;
+      account.lastError = '';
+      await saveAccount(g.kv, account);
+      return json({ account: publicView(account) });
+    }
+
     return error('unknown action', 400, 'invalid_request_error');
   }
 

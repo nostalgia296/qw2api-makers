@@ -1,5 +1,5 @@
 import { uuid } from './crypto.js';
-import { DEFAULT_MODEL } from './config.js';
+import { DEFAULT_MODEL, BUSINESS_PRODUCT, BUSINESS_TYPE } from './config.js';
 
 export function mapModel(name) {
   const m = String(name || '').trim();
@@ -32,84 +32,6 @@ function contentText(value) {
   }
   if (value === null || value === undefined) return '';
   return JSON.stringify(value);
-}
-
-function blankResponseMeta() {
-  return {
-    id: '',
-    usage: {
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      completion_tokens_details: { reasoning_tokens: 0 },
-      prompt_tokens_details: { cached_tokens: 0 },
-    },
-  };
-}
-
-// 兼容 OpenAI 的 image_url / input_image 两种 part，以及三种 url 写法
-function extractImagePart(part) {
-  if (!part || typeof part !== 'object') return null;
-  const t = part.type || '';
-  if (t !== 'image_url' && t !== 'input_image') return null;
-  const iu = part.image_url;
-  let url;
-  if (iu && typeof iu === 'object') url = iu.url;
-  else if (typeof iu === 'string') url = iu;
-  else url = part.url;
-  return typeof url === 'string' && url ? url : null;
-}
-
-function extractMessageImages(message) {
-  const content = message && message.content;
-  const urls = [];
-  if (Array.isArray(content)) {
-    for (const part of content) {
-      const url = extractImagePart(part);
-      if (url) urls.push(url);
-    }
-  }
-  return urls;
-}
-
-// 上游多模态形态：图片 part 在前、文本 part 在后，正文放 contents 而非 content
-function buildMultimodalUserMessage(text, images) {
-  const parts = images.map((url) => ({ type: 'image_url', image_url: { url } }));
-  if (String(text || '').trim()) parts.push({ type: 'text', text });
-  return {
-    role: 'user',
-    content: '',
-    contents: parts,
-    response_meta: blankResponseMeta(),
-    reasoning_content_signature: '',
-  };
-}
-
-function attachImages(messages) {
-  let count = 0;
-  const out = messages.map((m) => {
-    if (!m || typeof m !== 'object' || m.role !== 'user') return m;
-    const images = extractMessageImages(m);
-    if (!images.length) return m;
-    count += images.length;
-    return buildMultimodalUserMessage(contentText(m.content), images);
-  });
-  return { messages: out, count };
-}
-
-// 脱敏只动文本，保留图片 part，避免把多模态消息压平成纯字符串
-function desensitizeMessage(m, desensitize) {
-  if (!m || typeof m !== 'object') return m;
-  if (m.role !== 'user' || !hasCliMarker(contentText(m.content))) return m;
-  if (Array.isArray(m.content) && extractMessageImages(m).length) {
-    return {
-      ...m,
-      content: m.content.map((p) =>
-        p && typeof p === 'object' && typeof p.text === 'string' ? { ...p, text: desensitize(p.text) } : p
-      ),
-    };
-  }
-  return { ...m, content: desensitize(contentText(m.content)) };
 }
 
 function splitMessages(payload) {
@@ -151,13 +73,18 @@ export function buildBody(payload, modelKey, desensitize) {
   }
   if (!lastUser) lastUser = 'ping';
 
+  const tokenCap = payload.max_completion_tokens !== undefined ? payload.max_completion_tokens : payload.max_tokens;
   const parameters = {};
-  for (const k of ['temperature', 'top_p', 'max_tokens', 'presence_penalty', 'frequency_penalty']) {
+  for (const k of ['temperature', 'top_p', 'presence_penalty', 'frequency_penalty']) {
     if (payload[k] !== undefined && payload[k] !== null) parameters[k] = payload[k];
+  }
+  if (tokenCap !== undefined && tokenCap !== null) {
+    const n = Number(tokenCap);
+    if (Number.isFinite(n) && n > 0) parameters.max_tokens = Math.floor(n);
   }
   if (parameters.max_tokens === undefined) parameters.max_tokens = 32000;
 
-  const tools = Array.isArray(payload.tools) ? payload.tools : [];
+  const tools = !(payload.tool_choice === 'none') && Array.isArray(payload.tools) ? payload.tools : [];
   const isReasoning = false;
 
   let systemText = system;
@@ -167,7 +94,13 @@ export function buildBody(payload, modelKey, desensitize) {
   if (desensitize && typeof desensitize === 'function') {
     systemText = desensitize(systemText);
     upstreamText = desensitize(upstreamText);
-    upstreamMessages = messages.map((m) => desensitizeMessage(m, desensitize));
+    upstreamMessages = messages.map((m) => {
+      if (!m || typeof m !== 'object') return m;
+      if (m.role === 'user' && hasCliMarker(contentText(m.content))) {
+        return { ...m, content: desensitize(contentText(m.content)) };
+      }
+      return m;
+    });
     upstreamTools = tools.map((t) => {
       if (!t || typeof t !== 'object') return t;
       const fn = t.function && typeof t.function === 'object' ? t.function : null;
@@ -182,9 +115,6 @@ export function buildBody(payload, modelKey, desensitize) {
     });
   }
 
-  // 带图片的 user 消息改写成上游多模态形态（contents 数组），纯文本消息保持原样透传
-  upstreamMessages = attachImages(upstreamMessages).messages;
-
   return JSON.stringify({
     request_id: requestID,
     request_set_id: requestID,
@@ -197,7 +127,7 @@ export function buildBody(payload, modelKey, desensitize) {
       features: [],
       extra: {
         context: [],
-        modelConfig: { key, is_reasoning: isReasoning, is_vl: true },
+        modelConfig: { key, is_reasoning: isReasoning },
         originalContent: upstreamText,
       },
       chatPrompt: '',
@@ -227,6 +157,12 @@ export function buildBody(payload, modelKey, desensitize) {
     messages: upstreamMessages,
     tools: upstreamTools,
     parameters,
+    business: {
+      product: BUSINESS_PRODUCT,
+      type: BUSINESS_TYPE,
+      version: '1',
+      feature_switches: {},
+    },
   });
 }
 

@@ -1,6 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,7 +24,7 @@ let failed = 0;
 for (const file of files) {
   const rel = relative(root, file);
   try {
-    const mod = await import(file);
+    const mod = await import(pathToFileURL(file).href);
     const handlers = ['onRequest', 'onRequestGet', 'onRequestPost', 'onRequestPut', 'onRequestDelete', 'onRequestOptions'].filter(
       (name) => typeof mod[name] === 'function'
     );

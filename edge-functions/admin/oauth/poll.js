@@ -32,14 +32,16 @@ export async function onRequest(context) {
 
   const fresh = newAccount(outcome.grant);
   const existing = await listAccounts(g.kv);
-  const same = existing.find((a) => (fresh.uid && a.uid === fresh.uid) || (!fresh.uid && a.nickname === fresh.nickname));
+  const same =
+    existing.find((a) => a.uid && a.uid === fresh.uid) ||
+    existing.find((a) => !fresh.uid && fresh.nickname && a.nickname === fresh.nickname);
 
   let account = fresh;
   if (same) {
     account = same;
-    account.accessToken = fresh.accessToken;
-    account.refreshToken = fresh.refreshToken;
-    account.expiresAt = fresh.expiresAt;
+    for (const field of ['accessToken', 'refreshToken', 'expiresAt', 'nickname', 'enterpriseId']) {
+      if (fresh[field] !== undefined && fresh[field] !== '' && fresh[field] !== 0) account[field] = fresh[field];
+    }
     account.disabled = false;
     account.cooldownUntil = 0;
     account.lastError = '';

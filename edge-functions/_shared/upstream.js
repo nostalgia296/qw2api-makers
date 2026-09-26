@@ -40,6 +40,11 @@ export async function modelList(account) {
       isReasoning: !!m.is_reasoning,
       isVL: !!m.is_vl,
       maxInputTokens: m.max_input_tokens || 0,
+      maxOutputTokens: m.max_output_tokens || 0,
+      credits: typeof m.credits === 'string' ? m.credits : '',
+      supportsImages: !!m.is_vl,
+      supportsReasoning: !!m.is_reasoning,
+      description: typeof m.description === 'string' ? m.description : '',
     }));
 }
 

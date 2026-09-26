@@ -45,3 +45,8 @@ npm test
 
 - EdgeOne 边缘函数请求 body 上限 **1MB**（超长上下文会被拒绝）；Workers 无此限制。**内联 base64 图片会直接计入这个体积**（base64 比原图大约 1.33 倍），在 EdgeOne 上传大图请改用外链 URL，或部署到 Workers。
 - EdgeOne 单次执行 CPU 时间片 **200ms**（不含 I/O 等待）；签名计算约 <5ms，SSE 转换为逐帧解析。
+
+## 致谢
+
+- [hostei](https://github.com/hostei33)
+

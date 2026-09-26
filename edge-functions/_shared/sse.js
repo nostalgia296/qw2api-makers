@@ -1,3 +1,5 @@
+import { cleanErrorText } from './http.js';
+
 function fmtBodyText(value) {
   if (typeof value === 'string') return value;
   if (value && typeof value === 'object') return JSON.stringify(value);
@@ -9,7 +11,7 @@ function bodyCodeMessage(raw, status) {
   try {
     inner = JSON.parse(raw);
   } catch {
-    return status >= 400 ? `upstream ${status}: ${raw.slice(0, 200)}` : '';
+    return status >= 400 ? `upstream ${status}: ${String(raw).slice(0, 200)}` : '';
   }
   if (!inner || typeof inner !== 'object') return '';
   const code = inner.code;
@@ -17,13 +19,14 @@ function bodyCodeMessage(raw, status) {
     return inner.message ? String(inner.message) : `upstream ${code}`;
   }
   if (status >= 400) {
-    return inner.message ? String(inner.message) : `upstream ${status}: ${raw.slice(0, 200)}`;
+    return inner.message ? String(inner.message) : `upstream ${status}: ${String(raw).slice(0, 200)}`;
   }
   return '';
 }
 
 export function unwrapFrame(payload) {
-  const text = payload.trim();
+  if (typeof payload !== 'string') return { ok: false };
+  const text = String(payload).trim();
   if (!text || text === '[DONE]' || text === '{}') return { ok: false };
   let outer;
   try {
@@ -78,6 +81,10 @@ export function cleanChunk(text) {
   if (obj.usage && typeof obj.usage === 'object') {
     let changed = false;
     for (const noise of ['raw_usage', 'sub_usages']) {
+      if (Object.prototype.hasOwnProperty.call(obj.usage, noise)) {
+        delete obj.usage[noise];
+        changed = true;
+      }
       if (Object.prototype.hasOwnProperty.call(obj, noise)) {
         delete obj[noise];
         changed = true;
@@ -92,15 +99,11 @@ export function cleanChunk(text) {
       if (!choice || typeof choice !== 'object') continue;
       const delta = choice.delta;
       if (!delta || typeof delta !== 'object') continue;
-      if (Object.prototype.hasOwnProperty.call(delta, 'function_call') && isEmptyValue(delta.function_call)) {
-        delete delta.function_call;
-        changed = true;
-      }
       if (Array.isArray(delta.tool_calls) && delta.tool_calls.length === 0) {
         delete delta.tool_calls;
         changed = true;
       }
-      for (const noise of ['extra_fields', 'refusal', 'reasoning_content']) {
+      for (const noise of ['content', 'reasoning_content', 'function_call', 'refusal', 'extra_fields']) {
         if (Object.prototype.hasOwnProperty.call(delta, noise) && isEmptyValue(delta[noise])) {
           delete delta[noise];
           changed = true;
@@ -236,16 +239,17 @@ export async function collectSync(upstreamBody, model) {
     state.error = `upstream stream read error: ${err && err.message ? err.message : err}`;
   }
 
-  if (state.error) return { error: state.error };
+  if (state.error) return { error: cleanErrorText(state.error) };
   return { completion: aggregate(chunks, model), usage: state.usage };
 }
 
-export function transform(upstreamBody, model, onUsage) {
+export function transform(upstreamBody, model, onUsage, { heartbeatMs = 15000 } = {}) {
   const reader = upstreamBody.getReader();
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   let buffer = '';
   let notified = false;
+  let heartbeat = null;
   const state = { usage: null, error: null };
 
   const notify = () => {
@@ -266,7 +270,31 @@ export function transform(upstreamBody, model, onUsage) {
     }
   };
 
+  const stopHeartbeat = () => {
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+  };
+
+  const finish = () => {
+    stopHeartbeat();
+    notify();
+  };
+
   return new ReadableStream({
+    start(controller) {
+      if (heartbeatMs > 0) {
+        heartbeat = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(': ping\n\n'));
+          } catch {
+            /* stream already closed */
+          }
+        }, heartbeatMs);
+        if (heartbeat.unref) heartbeat.unref();
+      }
+    },
     async pull(controller) {
       try {
         for (;;) {
@@ -275,11 +303,13 @@ export function transform(upstreamBody, model, onUsage) {
             read = await reader.read();
           } catch (err) {
             const message = `upstream stream read error: ${err && err.message ? err.message : err}`;
+            stopHeartbeat();
             emitError(controller, message);
             notify();
             return;
           }
           if (read.done) {
+            stopHeartbeat();
             if (buffer) {
               const out = handleLine(buffer, state);
               if (out) controller.enqueue(encoder.encode(out));
@@ -294,7 +324,7 @@ export function transform(upstreamBody, model, onUsage) {
                 /* stream already closed by the client */
               }
             }
-            notify();
+            finish();
             return;
           }
           buffer += decoder.decode(read.value, { stream: true });
@@ -311,12 +341,16 @@ export function transform(upstreamBody, model, onUsage) {
           }
         }
       } catch (err) {
-        notify();
-        throw err;
+        finish();
+        try {
+          emitError(controller, `stream error: ${err && err.message ? err.message : err}`);
+        } catch {
+          /* already closed */
+        }
       }
     },
     cancel(reason) {
-      notify();
+      finish();
       if (reader.cancel) reader.cancel(reason);
     },
   });

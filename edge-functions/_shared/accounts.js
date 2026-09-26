@@ -1,4 +1,5 @@
 import { getJSON, putJSON, listKeys } from './kv.js';
+import { cleanErrorText } from './http.js';
 import { ACCOUNT_PREFIX, COOLDOWN_MS, REFRESH_MARGIN_MS } from './config.js';
 import { invalidateSession } from './cosy.js';
 import { refreshDeviceToken, userInfo, expiryUnix } from './upstream.js';
@@ -44,6 +45,7 @@ export function publicView(account) {
     expiresAt: account.expiresAt || 0,
     expired: account.expiresAt ? account.expiresAt * 1000 <= now : false,
     cooling: !!account.cooldownUntil && account.cooldownUntil > now,
+    cooldownUntil: account.cooldownUntil || 0,
     lastError: account.lastError || '',
   };
 }
@@ -66,15 +68,15 @@ export function pickAccount(accounts, now = Date.now()) {
   return usable[0];
 }
 
-export function markCooldown(account, message) {
-  account.cooldownUntil = Date.now() + COOLDOWN_MS;
-  account.lastError = String(message || '').slice(0, 300);
+export function markCooldown(account, message, ms) {
+  account.cooldownUntil = Date.now() + (Number(ms) > 0 ? Number(ms) : COOLDOWN_MS);
+  account.lastError = cleanErrorText(message);
   return account;
 }
 
 export function markDead(account, message) {
   account.disabled = true;
-  account.lastError = String(message || '').slice(0, 300);
+  account.lastError = cleanErrorText(message);
   return account;
 }
 

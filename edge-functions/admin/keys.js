@@ -1,5 +1,5 @@
 import { guard } from '../_shared/admin.js';
-import { saveSettings, newAPIKey } from '../_shared/auth.js';
+import { saveSettings, newAPIKey, hashPassword, adminAuthDisabled } from '../_shared/auth.js';
 import { json, error } from '../_shared/http.js';
 
 function mask(key) {
@@ -27,6 +27,18 @@ export async function onRequest(context) {
   }
 
   if (g.method === 'POST') {
+    if (g.body.action === 'reveal') {
+      if (!adminAuthDisabled(g.env)) {
+        const password = String(g.body.password || '');
+        if (!g.settings.adminHash || (await hashPassword(password, g.settings.adminSalt)) !== g.settings.adminHash) {
+          return error('password verification failed', 401, 'invalid_password');
+        }
+      }
+      const found = g.settings.apiKeys.find((k) => k.id === String(g.body.id || ''));
+      if (!found) return error('key not found', 404, 'not_found');
+      return json({ id: found.id, name: found.name, key: found.key });
+    }
+
     const item = newAPIKey(String(g.body.name || 'key').slice(0, 40));
     g.settings.apiKeys.push(item);
     await saveSettings(g.kv, g.settings);

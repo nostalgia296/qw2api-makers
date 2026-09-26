@@ -13,13 +13,12 @@ export async function onRequest(context) {
   g.settings.initialized = true;
   g.settings.adminSalt = salt;
   g.settings.adminHash = await hashPassword(password, salt);
-  let apiKey = null;
+  let createdKey = null;
   if (!Array.isArray(g.settings.apiKeys) || g.settings.apiKeys.length === 0) {
-    const item = newAPIKey('default');
-    g.settings.apiKeys = [item];
-    apiKey = item.key;
+    createdKey = newAPIKey('default');
+    g.settings.apiKeys = [createdKey];
   }
   await saveSettings(g.kv, g.settings);
   const token = await createSession(g.kv);
-  return json(apiKey ? { token, apiKey } : { token });
+  return json({ token, apiKey: createdKey ? createdKey.key : null });
 }

@@ -1,6 +1,6 @@
 export const BASE = 'https://gateway.qwenwork.cn';
 
-export const UA = 'qwenwork/0.1.8';
+export const UA = 'qoderwork/1.0.5';
 
 export const CLIENT_ID = 'e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb';
 export const REDIRECT_URI = 'qwenwork-cn://';
@@ -14,9 +14,9 @@ export const REFRESH_URL = `${BASE}/api/v1/deviceToken/refresh`;
 export const DEVICE_AUTH_URL = `${BASE}/device/selectAccounts`;
 
 export const COSY_VERSION = '1.1.18';
-export const IDE_VERSION = '0.1.8';
-export const RELEASE_VERSION = '0.1.8-26081406';
-export const BUILD = '26081406';
+export const IDE_VERSION = '1.0.5';
+export const RELEASE_VERSION = '1.0.5-26090901';
+export const BUILD = '26090901';
 export const CLIENT_TYPE = '6';
 export const BUSINESS_PRODUCT = 'qoder_work';
 export const BUSINESS_TYPE = 'agent';
@@ -30,7 +30,7 @@ export const MAX_COMPLETION_TOKENS = 32768;
 export const STATIC_MODELS = [
   { key: 'pro', name: 'QwenWork 高级 (Pro)' },
   { key: 'flash', name: 'QwenWork Qwen3.8-Flash' },
-  { key: 'qwen3.8-max', name: 'QwenWork Qwen3.8-Max' },
+  { key: 'qwen3.8-max-preview', name: 'QwenWork Qwen3.8-Max' },
 ];
 
 export const KV_NAMES = ['QWENWORK_KV', 'qwenwork_kv', 'QWENWORK2API_KV', 'my_kv', 'KV'];
@@ -44,5 +44,6 @@ export const STATS_KEY = 'stats';
 export const LOGIN_TTL_MS = 10 * 60 * 1000;
 export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 export const COOLDOWN_MS = 60 * 1000;
+export const COOLDOWN_SHORT_MS = 15 * 1000;
 export const REFRESH_MARGIN_MS = 30 * 60 * 1000;
 export const MODELS_CACHE_MS = 5 * 60 * 1000;

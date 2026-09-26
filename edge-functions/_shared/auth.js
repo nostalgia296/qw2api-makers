@@ -13,6 +13,7 @@ export function defaultSettings() {
     desensitizeTerms: [],
     defaultModel: 'pro',
     requestTimeoutMs: 120000,
+    streamMode: 'realtime',
   };
 }
 
@@ -70,6 +71,23 @@ export function readAdminToken(request) {
 
 export function readBearer(request) {
   return (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim();
+}
+
+function envFlag(env, name) {
+  const value = env ? env[name] : undefined;
+  return value === true || value === '1' || value === 'true' || value === 'yes';
+}
+
+export function apiAuthDisabled(env) {
+  return envFlag(env, 'API_NO_KEY') || envFlag(env, 'DISABLE_AUTH');
+}
+
+export function adminAuthDisabled(env) {
+  return envFlag(env, 'DISABLE_AUTH');
+}
+
+export function adminTokenAuthorized(env, token) {
+  return !!token && !!(env && env.ADMIN_TOKEN) && env.ADMIN_TOKEN === token;
 }
 
 export function matchAPIKey(settings, token) {

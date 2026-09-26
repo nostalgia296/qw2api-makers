@@ -229,16 +229,13 @@ res = await chatCompletions(
 check('chat image status', res.status, 200);
 const imgBody = JSON.parse(upstreamCalls[upstreamCalls.length - 1].body);
 check('chat image message count', imgBody.messages.length, 1);
-check('chat image content emptied', imgBody.messages[0].content, '');
-check('chat image contents order', imgBody.messages[0].contents.map((p) => p.type), ['image_url', 'image_url', 'text']);
-check('chat image data url kept', imgBody.messages[0].contents[0].image_url.url, dataUrl);
-check('chat image http url kept', imgBody.messages[0].contents[1].image_url.url, 'https://x/a.jpg');
-check('chat image text kept', imgBody.messages[0].contents[2].text, '这张图里是什么？');
-assert('chat image response_meta present', !!imgBody.messages[0].response_meta, JSON.stringify(imgBody.messages[0]));
-check('chat image is_vl flag', imgBody.chat_context.extra.modelConfig.is_vl, true);
+check('chat image content passthrough', imgBody.messages[0].content.map((p) => p.type), ['text', 'image_url', 'input_image']);
+check('chat image data url kept', imgBody.messages[0].content[1].image_url.url, dataUrl);
+check('chat image http url kept', imgBody.messages[0].content[2].image_url.url, 'https://x/a.jpg');
+check('chat image text kept', imgBody.messages[0].content[0].text, '这张图里是什么？');
+check('chat image model_config is_vl', imgBody.model_config.is_vl, true);
 check('chat image prompt text', imgBody.chat_context.text, '这张图里是什么？');
 
-// 纯图片消息不能被丢弃
 res = await chatCompletions(
   ctx(
     chatRequest(
@@ -249,8 +246,8 @@ res = await chatCompletions(
 );
 check('chat image-only status', res.status, 200);
 const onlyBody = JSON.parse(upstreamCalls[upstreamCalls.length - 1].body);
-check('chat image-only contents', onlyBody.messages[0].contents.map((p) => p.type), ['image_url']);
-check('chat image-only url', onlyBody.messages[0].contents[0].image_url.url, dataUrl);
+check('chat image-only content passthrough', onlyBody.messages[0].content.map((p) => p.type), ['image_url']);
+check('chat image-only url', onlyBody.messages[0].content[0].image_url.url, dataUrl);
 
 res = await chatCompletions(ctx(chatRequest({ model: 'pro', messages: [{ role: 'user', content: 'hi' }] }, 'sk-test-key')));
 const plainBody = JSON.parse(upstreamCalls[upstreamCalls.length - 1].body);
@@ -276,13 +273,33 @@ const desensitized = JSON.parse(
     (s) => String(s).replaceAll('secret-token', '[REDACTED]')
   )
 );
-check('desensitize keeps image part', desensitized.messages[0].contents.map((p) => p.type), ['image_url', 'text']);
-check('desensitize keeps image url', desensitized.messages[0].contents[0].image_url.url, dataUrl);
+check('desensitize flattens marked user content', typeof desensitized.messages[0].content, 'string');
 assert(
-  'desensitize redacts text part',
-  desensitized.messages[0].contents[1].text.includes('[REDACTED]'),
-  desensitized.messages[0].contents[1].text
+  'desensitize redacts text',
+  desensitized.messages[0].content.includes('[REDACTED]'),
+  desensitized.messages[0].content
 );
+
+const capped = JSON.parse(
+  buildBody(
+    {
+      model: 'pro',
+      messages: [{ role: 'user', content: 'hi' }],
+      max_completion_tokens: 1234.7,
+      tool_choice: 'none',
+      tools: [{ type: 'function', function: { name: 'f' } }],
+    },
+    'pro'
+  )
+);
+check('body max_completion_tokens mapped', capped.parameters.max_tokens, 1234);
+check('body business block', capped.business, { product: 'qoder_work', type: 'agent', version: '1', feature_switches: {} });
+check('body tool_choice none drops tools', capped.tools, []);
+
+const { cleanChunk, unwrapFrame } = await import('../edge-functions/_shared/sse.js');
+const usageNoise = JSON.stringify({ id: 'x', choices: [], usage: { total_tokens: 5, raw_usage: { internal: 1 } } });
+assert('cleanChunk strips usage-internal noise', !cleanChunk(usageNoise).includes('raw_usage'), cleanChunk(usageNoise));
+assert('unwrapFrame rejects non-string payload', JSON.stringify(unwrapFrame(undefined)), JSON.stringify({ ok: false }));
 
 res = await models(ctx(new Request('https://example.com/v1/models', { headers: { authorization: 'Bearer sk-test-key' } })));
 const modelList = await res.json();
@@ -376,6 +393,29 @@ check('admin rejects bad session', res.status, 401);
   store.set('admin_session', seededSession);
 }
 
+res = await keysAdmin(
+  ctx(
+    new Request('https://example.com/admin/keys', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-admin-token': adminToken },
+      body: JSON.stringify({ action: 'reveal', id: 'k1', password: 'wrong' }),
+    })
+  )
+);
+check('admin key reveal rejects wrong password', res.status, 401);
+
+res = await keysAdmin(
+  ctx(
+    new Request('https://example.com/admin/keys', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-admin-token': adminToken },
+      body: JSON.stringify({ action: 'reveal', id: 'k1', password: 'secret123' }),
+    })
+  )
+);
+const revealed = await res.json();
+check('admin key reveal returns full key', revealed.key, 'sk-test-key');
+
 res = await overviewAdmin(ctx(new Request('https://example.com/admin/overview?credits=0', { headers: { 'x-admin-token': adminToken } })));
 const overview = await res.json();
 check('overview account count', overview.total, 1);
@@ -396,6 +436,42 @@ const cron = await res.json();
 check('cron unauthorized keeps accounts fresh', cron.accounts[0].status, 'fresh');
 check('cron reports unauthorized', cron.authorized, false);
 
+const { onRequest: settingsAdmin } = await import('../edge-functions/admin/settings.js');
+res = await settingsAdmin(
+  ctx(
+    new Request('https://example.com/admin/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-admin-token': adminToken },
+      body: JSON.stringify({ streamMode: 'buffered' }),
+    })
+  )
+);
+check('settings streamMode saved', (await res.json()).streamMode, 'buffered');
+
+res = await chatCompletions(ctx(chatRequest({ model: 'pro', messages: [{ role: 'user', content: 'hi' }], stream: true }, 'sk-test-key')));
+check('chat buffered status', res.status, 200);
+check('chat buffered content-type', res.headers.get('content-type'), 'text/event-stream; charset=utf-8');
+const buffered = await res.text();
+const bufferedFrames = buffered.split('\n\n').filter(Boolean);
+check('chat buffered frame count', bufferedFrames.length, 3);
+const bufferedFirst = JSON.parse(bufferedFrames[0].slice(5));
+check('chat buffered chunk object', bufferedFirst.object, 'chat.completion.chunk');
+check('chat buffered delta content', bufferedFirst.choices[0].delta.content, '你好，世界');
+check('chat buffered finish reason', bufferedFirst.choices[0].finish_reason, 'stop');
+check('chat buffered usage frame', JSON.parse(bufferedFrames[1].slice(5)).usage.total_tokens, 16);
+check('chat buffered last frame done', bufferedFrames[2].trim(), 'data: [DONE]');
+
+res = await settingsAdmin(
+  ctx(
+    new Request('https://example.com/admin/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-admin-token': adminToken },
+      body: JSON.stringify({ streamMode: 'realtime' }),
+    })
+  )
+);
+check('settings streamMode restored', (await res.json()).streamMode, 'realtime');
+
 res = await keepalive(
   ctx(
     new Request('https://example.com/cron/keepalive', {
@@ -411,6 +487,8 @@ assert('cron refresh attempted upstream', upstreamCalls.some((c) => c.url === '/
 
 await Promise.allSettled(waitUntilCalls);
 server.close();
+if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+await new Promise((r) => setTimeout(r, 250));
 
 console.log(failed === 0 ? '\nall e2e checks passed' : `\n${failed} e2e check(s) failed`);
 process.exit(failed === 0 ? 0 : 1);

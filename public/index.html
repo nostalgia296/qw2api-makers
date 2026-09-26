@@ -277,6 +277,15 @@ function fmtExpiry(seconds) {
   return '已过期';
 }
 
+function fmtCoolLeft(msUntil) {
+  const ms = Math.max(0, msUntil - Date.now());
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  if (h > 0) return h + 'h' + String(m).padStart(2, '0') + 'm';
+  if (m > 0) return m + 'm';
+  return Math.max(1, Math.floor(ms / 1000)) + 's';
+}
+
 function closeSheet() { $('#sheet-root').innerHTML = ''; }
 
 function openSheet(html) {
@@ -298,6 +307,72 @@ function showNewKeySheet(key, title) {
     const act = e.target && e.target.dataset ? e.target.dataset.act : null;
     if (act === 'copy-key') navigator.clipboard.writeText(key).then(() => toast('已复制'), () => {});
     if (act === 'close') closeSheet();
+  });
+}
+
+function openKeyMenu(id) {
+  const key = ((state.keys && state.keys.keys) || []).find((k) => k.id === id);
+  if (!key) return;
+  const sheet = openSheet([
+    '<h3>API Key · ' + escapeHTML(key.name || '') + '</h3>',
+    '<p class="mono" style="word-break:break-all">' + escapeHTML(key.masked) + ' · 创建于 ' + fmtTime(key.createdAt) + '</p>',
+    '<div class="group"><button class="btn" data-act="reveal">查看完整 Key（需验证密码）</button></div>',
+    '<div class="group"><button class="btn danger" data-act="ask-delete">删除此 Key</button></div>',
+    '<div class="group"><button class="btn secondary" data-act="cancel">取消</button></div>'
+  ].join(''));
+  sheet.addEventListener('click', (e) => {
+    const act = e.target && e.target.dataset ? e.target.dataset.act : null;
+    if (act === 'cancel') { closeSheet(); return; }
+    if (act === 'reveal') { showRevealSheet(id); return; }
+    if (act === 'ask-delete') { confirmDeleteKey(id); }
+  });
+}
+
+function confirmDeleteKey(id) {
+  const key = ((state.keys && state.keys.keys) || []).find((k) => k.id === id);
+  const sheet = openSheet([
+    '<h3>删除 API Key？</h3>',
+    '<p>确定删除「' + escapeHTML((key && key.name) || '') + '」（' + escapeHTML((key && key.masked) || '') + '）？<br>使用它的客户端将立即失效，删除后无法恢复。</p>',
+    '<div class="group"><button class="btn danger" id="confirm-del-key">确认删除</button></div>',
+    '<div class="group"><button class="btn secondary" data-act="cancel">取消</button></div>'
+  ].join(''));
+  sheet.querySelector('#confirm-del-key').addEventListener('click', async () => {
+    try {
+      await api('/admin/keys?id=' + encodeURIComponent(id), { method: 'DELETE' });
+      await loadKeys();
+      render();
+      closeSheet();
+      toast('已删除');
+    } catch (e) { toast(e.message); }
+  });
+  sheet.querySelector('[data-act="cancel"]').addEventListener('click', () => {
+    openKeyMenu(id);
+  });
+}
+
+function showRevealSheet(id) {
+  const sheet = openSheet([
+    '<h3>验证管理员密码</h3>',
+    '<p>查看完整 API Key 需要再次输入管理密码。</p>',
+    '<div class="field"><input type="password" id="reveal-password" placeholder="管理密码" autocomplete="current-password"></div>',
+    '<div class="group"><button class="btn" id="reveal-submit">验证并显示</button></div>',
+    '<div class="group"><button class="btn secondary" data-act="cancel">取消</button></div>'
+  ].join(''));
+  const submit = async () => {
+    const password = $('#reveal-password').value;
+    if (!password) { toast('请输入密码'); return; }
+    try {
+      const revealed = await api('/admin/keys', { method: 'POST', body: { action: 'reveal', id, password } });
+      closeSheet();
+      showNewKeySheet(revealed.key, '完整 API Key');
+    } catch (e) {
+      toast(e.status === 401 ? '密码错误' : e.message);
+    }
+  };
+  sheet.querySelector('#reveal-submit').addEventListener('click', submit);
+  sheet.querySelector('#reveal-password').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  sheet.addEventListener('click', (e) => {
+    if (e.target && e.target.dataset && e.target.dataset.act === 'cancel') closeSheet();
   });
 }
 
@@ -446,7 +521,7 @@ function renderAccounts() {
   const rows = accounts.map((a) => {
     const status = a.disabled
       ? '<span class="badge err">已停用</span>'
-      : (a.cooling ? '<span class="badge warn">冷却中</span>' : (a.expired ? '<span class="badge err">凭证过期</span>' : '<span class="badge ok">可用</span>'));
+      : (a.cooling ? '<span class="badge warn">冷却 ' + fmtCoolLeft(a.cooldownUntil) + '</span>' : (a.expired ? '<span class="badge err">凭证过期</span>' : '<span class="badge ok">可用</span>'));
     return '<div class="item" data-id="' + escapeHTML(a.id) + '">' +
       '<div class="label"><div class="k">' + escapeHTML(a.nickname || a.uid || a.id) + '</div>' +
       '<div class="v">' + escapeHTML(a.email || a.uid || '') + ' · 凭证 ' + fmtExpiry(a.expiresAt) + (a.lastError ? ' · ' + escapeHTML(a.lastError) : '') + '</div></div>' +
@@ -477,11 +552,15 @@ function renderAccounts() {
 function openAccountMenu(id) {
   const account = (state.overview.accounts || []).find((a) => a.id === id);
   if (!account) return;
+  const thawBtn = account.cooling
+    ? '<div class="group"><button class="btn" data-act="thaw">解除冷却（立即重新可用）</button></div>'
+    : '';
   const sheet = openSheet([
     '<h3>' + escapeHTML(account.nickname || account.uid || account.id) + '</h3>',
     '<p>' + escapeHTML(account.email || account.uid || '') + ' · 凭证 ' + fmtExpiry(account.expiresAt) + '</p>',
     '<div class="group"><button class="btn secondary" data-act="refresh">刷新凭证</button></div>',
     '<div class="group"><button class="btn secondary" data-act="sync">同步昵称与邮箱</button></div>',
+    thawBtn,
     '<div class="group"><button class="btn secondary" data-act="toggle">' + (account.disabled ? '启用账号' : '停用账号') + '</button></div>',
     '<div class="group"><button class="btn danger" data-act="delete">删除账号</button></div>',
     '<div class="group"><button class="btn secondary" data-act="cancel">取消</button></div>'
@@ -495,6 +574,7 @@ function openAccountMenu(id) {
       if (act === 'refresh') { await api('/admin/accounts', { method: 'POST', body: { id, action: 'refresh' } }); toast('凭证已刷新'); }
       if (act === 'sync') { await api('/admin/accounts', { method: 'POST', body: { id, action: 'sync' } }); toast('资料已同步'); }
       if (act === 'toggle') { await api('/admin/accounts', { method: 'POST', body: { id, action: 'toggle' } }); toast('状态已更新'); }
+      if (act === 'thaw') { await api('/admin/accounts', { method: 'POST', body: { id, action: 'thaw' } }); toast('已解除冷却'); }
       if (act === 'delete') { await api('/admin/accounts?id=' + encodeURIComponent(id), { method: 'DELETE' }); toast('账号已删除'); }
       closeSheet();
       await loadOverview();
@@ -572,7 +652,7 @@ function renderSettings() {
     keys.length ? keys.map((k) =>
       '<div class="item" data-key="' + escapeHTML(k.id) + '"><div class="label"><div class="k">' + escapeHTML(k.name) + '</div>' +
       '<div class="v mono">' + escapeHTML(k.masked) + ' · ' + fmtTime(k.createdAt) + '</div></div>' +
-      '<button class="btn small secondary" data-act="delkey">删除</button></div>').join('')
+      '<button class="btn small secondary" data-act="manage-key">管理</button></div>').join('')
       : '<div class="item"><div class="label"><div class="k">还没有 API Key</div><div class="v">创建后即可用于 OpenAI 客户端</div></div></div>',
     '  </div>',
     '  <div class="group-footer">客户端请求头：Authorization: Bearer &lt;API Key&gt;</div>',
@@ -592,6 +672,11 @@ function renderSettings() {
     '      </select></div></div>',
     '    <div class="item"><div class="label"><div class="k">上游超时（毫秒）</div></div>' +
     '      <div class="value"><input type="number" id="set-timeout" value="' + (s.requestTimeoutMs || 120000) + '" style="text-align:right;color:var(--muted)"></div></div>',
+    '    <div class="item"><div class="label"><div class="k">流式模式</div><div class="v">正常流式 = 实时逐字(默认)；稳定(缓冲) = 聚合后再发，抗网关 500</div></div>' +
+    '      <div class="value"><select id="set-stream" style="text-align:right;color:var(--muted)">' +
+    '        <option value="realtime"' + (s.streamMode !== 'buffered' ? ' selected' : '') + '>正常流式（实时逐字）</option>' +
+    '        <option value="buffered"' + (s.streamMode === 'buffered' ? ' selected' : '') + '>稳定（缓冲聚合）</option>' +
+    '      </select></div></div>',
     '  </div>',
     '</div>',
     '<div class="group">',
@@ -613,7 +698,8 @@ function renderSettings() {
     '  <div class="group-footer">在 edgeone.json 的 schedules 中配置 payload {"token": "..."} 即可每天自动保活凭证。</div>',
     '</div>',
     '<div class="group">',
-    '  <div class="field"><div class="caption">新的管理密码（留空表示不修改）</div><input type="password" id="set-password" placeholder="至少 6 位"></div>',
+    '  <div class="field"><div class="caption">当前密码（修改密码时必填）</div><input type="password" id="set-old-password" placeholder="输入当前管理密码" autocomplete="current-password"></div>',
+    '  <div class="field"><div class="caption">新的管理密码（留空表示不修改）</div><input type="password" id="set-password" placeholder="至少 6 位" autocomplete="new-password"></div>',
     '  <button class="btn" id="save-settings">保存设置</button>',
     '</div>',
     '<div class="group"><button class="btn danger" id="logout">退出登录</button></div>'
@@ -629,16 +715,8 @@ function renderSettings() {
     } catch (e) { toast(e.message); }
   });
 
-  $('#tab-settings').querySelectorAll('[data-act="delkey"]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.closest('.item').dataset.key;
-      try {
-        await api('/admin/keys?id=' + encodeURIComponent(id), { method: 'DELETE' });
-        await loadKeys();
-        render();
-        toast('已删除');
-      } catch (e) { toast(e.message); }
-    });
+  $('#tab-settings').querySelectorAll('[data-act="manage-key"]').forEach((btn) => {
+    btn.addEventListener('click', () => openKeyMenu(btn.closest('.item').dataset.key));
   });
 
   const cronBtn = document.querySelector('[data-act="copy-cron"]');
@@ -652,10 +730,16 @@ function renderSettings() {
       desensitize: $('#set-desen').checked,
       defaultModel: $('#set-model').value,
       requestTimeoutMs: Number($('#set-timeout').value) || 120000,
+      streamMode: $('#set-stream').value,
       desensitizeTerms: $('#set-terms').value.split('\n').map((t) => t.trim()).filter(Boolean),
     };
     const password = $('#set-password').value;
-    if (password) body.password = password;
+    if (password) {
+      const oldPassword = $('#set-old-password').value;
+      if (!oldPassword) { toast('修改密码需要先输入当前密码'); return; }
+      body.password = password;
+      body.oldPassword = oldPassword;
+    }
     try {
       state.settings = await api('/admin/settings', { method: 'PUT', body });
       toast('已保存');
